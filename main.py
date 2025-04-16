@@ -1,7 +1,6 @@
 from flask import Flask
 import base64
 import os
-import re
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
@@ -19,75 +18,57 @@ def gmail_auto_reply():
 
     service = build("gmail", "v1", credentials=creds)
 
+    # Get unread messages
     results = service.users().messages().list(
-        userId="me", labelIds=["INBOX", "UNREAD"], maxResults=10
+        userId="me", labelIds=["INBOX", "UNREAD"], maxResults=1
     ).execute()
 
     messages = results.get("messages", [])
+    if not messages:
+        return "No unread messages."
 
-    for message in messages:
-        msg = service.users().messages().get(userId="me", id=message["id"], format="full").execute()
-        headers = msg["payload"]["headers"]
+    msg = service.users().messages().get(userId="me", id=messages[0]["id"]).execute()
+    headers = msg["payload"]["headers"]
 
-        sender = next((h["value"] for h in headers if h["name"] == "From"), "")
-        to_email = next((h["value"] for h in headers if h["name"] == "To"), "")
+    sender = next((h["value"] for h in headers if h["name"] == "From"), None)
+    subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
 
-        if "wwtarunsahu@gmail.com" not in to_email:
-            continue  # Only respond if email was sent to this address
+    if not sender:
+        return "No sender found."
 
-        # Extract all email addresses from body and headers
-        body_data = ""
-        if "parts" in msg["payload"]:
-            for part in msg["payload"]["parts"]:
-                if part.get("mimeType") == "text/plain":
-                    body_data = base64.urlsafe_b64decode(part["body"]["data"]).decode()
-        else:
-            body_data = base64.urlsafe_b64decode(msg["payload"]["body"]["data"]).decode()
+    name = sender.split("<")[0].strip()
+    reply_text = f"""Hello {name},
 
-        all_emails = set(re.findall(r'[\w\.-]+@[\w\.-]+', body_data))
-        target_emails = [e for e in all_emails if not e.endswith("gmail.com") and not e.endswith("algebrait.com")]
-
-        if not target_emails:
-            continue
-
-        target_email = target_emails[0]
-        target_name = target_email.split("@")[0].split(".")[0].capitalize()
-
-        reply_text = f"""Hello {target_name},
-  
 I hope you're doing well. I recently received a job requirement from my employer, and I wanted to express my strong interest in this position. I'm open to relocating if necessary and look forward to the possibility of joining your team.
 
-Please feel free to reach out to me at your earliest convenience to discuss this opportunity further. If required, I can also provide passport details.
+Please feel free to reach out to me at your earliest convenience to discuss this opportunity further. If required, I can also provide passport details as well.
 
 Looking forward to hearing from you soon.
 
-My Employers details:
-Sandy@algebrait.com, Rosy@algebrait.com
-7372796091  7372796092
+My Employer's contacts:
+sandy@algebrait.com, rosy@algebrait.com
+7372796091, 7372796092
 
---
-
-------------------------------------------
+Regards,
 Tarun Sahu
 P: 469-454-8473
 E: tarun.kum.sahu@gmail.com
 L: https://www.linkedin.com/in/tarun-sahu-716595243/
 """
 
-        message_body = f"To: {target_email}\r\nSubject: Re: Interest in the opportunity\r\n\r\n{reply_text}"
-        raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
+    message_body = f"To: {sender}\r\nSubject: Re: {subject}\r\n\r\n{reply_text}"
+    raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
 
-        service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
+    service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
 
-        # Mark the message as read
-        service.users().messages().modify(
-            userId="me",
-            id=message["id"],
-            body={"removeLabelIds": ["UNREAD"]}
-        ).execute()
+    # Mark the message as read
+    service.users().messages().modify(
+        userId="me",
+        id=messages[0]["id"],
+        body={"removeLabelIds": ["UNREAD"]}
+    ).execute()
 
-    return "Auto-replies sent."
+    return f"Replied to {sender}."
 
-# Bind to Cloud Run port
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

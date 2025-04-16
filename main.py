@@ -1,9 +1,9 @@
-from flask import Flask
+from flask import Flask, request
 import base64
 import os
+import re
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-import re
 
 app = Flask(__name__)
 
@@ -19,69 +19,64 @@ def gmail_auto_reply():
 
     service = build("gmail", "v1", credentials=creds)
 
-    # Get unread messages
     results = service.users().messages().list(
-        userId="me", labelIds=["INBOX", "UNREAD"], maxResults=1
+        userId="me", labelIds=["INBOX", "UNREAD"], maxResults=5
     ).execute()
 
     messages = results.get("messages", [])
-    if not messages:
-        return "No unread messages."
 
-    msg_id = messages[0]["id"]
-    msg = service.users().messages().get(userId="me", id=msg_id, format="full").execute()
-    headers = msg["payload"]["headers"]
+    for message in messages:
+        msg = service.users().messages().get(userId="me", id=message["id"]).execute()
+        headers = msg["payload"].get("headers", [])
 
-    sender = next((h["value"] for h in headers if h["name"] == "From"), None)
-    subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-    to = next((h["value"] for h in headers if h["name"] == "To"), "")
-    cc = next((h["value"] for h in headers if h["name"] == "Cc"), "")
+        to_emails = set()
+        body_text = ""
 
-    # Combine recipients and filter only non-gmail/non-algebrait addresses
-    raw_recipients = [sender] + re.split(r',\s*', to) + re.split(r',\s*', cc)
-    filtered_recipients = [
-        r for r in raw_recipients if not re.search(r'(@gmail\.com|@algebrait\.com)', r, re.I)
-    ]
-    unique_emails = list(set([re.search(r'[\w\.-]+@[\w\.-]+', r).group() for r in filtered_recipients if re.search(r'@', r)]))
+        # Extract known fields
+        for header in headers:
+            name = header.get("name", "")
+            value = header.get("value", "")
+            if name in ["From", "To", "Cc"]:
+                to_emails.update(re.findall(r'[\w\.-]+@[\w\.-]+', value))
 
-    if not unique_emails:
-        return "No filtered recipients to reply to."
+        # Extract email body
+        if "parts" in msg["payload"]:
+            for part in msg["payload"]["parts"]:
+                if part.get("mimeType") == "text/plain":
+                    body_data = part["body"].get("data", "")
+                    body_text = base64.urlsafe_b64decode(body_data + '===').decode("utf-8", errors="ignore")
+        elif "body" in msg["payload"]:
+            body_data = msg["payload"]["body"].get("data", "")
+            body_text = base64.urlsafe_b64decode(body_data + '===').decode("utf-8", errors="ignore")
 
-    # Email content
-    reply_text = """Hello,
+        # Add email addresses found in body
+        body_emails = re.findall(r'[\w\.-]+@[\w\.-]+', body_text)
+        to_emails.update(body_emails)
 
-I hope you're doing well. I recently received a job requirement from my employer, and I wanted to express my strong interest in this position. I'm open to relocating if necessary and look forward to the possibility of joining your team.
+        # Remove known internal domains
+        filtered_emails = [e for e in to_emails if not e.endswith(('algebrait.com', 'gmail.com'))]
 
-Please feel free to reach out to me at your earliest convenience to discuss this opportunity further. If required, I can also provide passport details.
+        if not filtered_emails:
+            continue
 
-Looking forward to hearing from you soon.
+        # Compose the reply
+        subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
+        sender_name = filtered_emails[0].split('@')[0].title()
 
-My Employer's contacts:
-sandy@algebrait.com, rosy@algebrait.com
-7372796091, 7372796092
+        reply_text = f"Hello {sender_name},\n\nI recently received a job requirement from my employer, and I wanted to express my strong interest in this position. I'm open to relocating if necessary and look forward to the possibility of joining your team.\n\nPlease feel free to reach out to me at your earliest convenience to discuss this opportunity further. If required, I can also provide passport details as well.\n\nLooking forward to hearing from you soon.\nMy Employers details:\n\nSandy@algebrait.com , Rosy@algebrait.com \n\n7372796091  7372796092"
 
-Regards,  
-Tarun Sahu  
-P: 469-454-8473  
-E: tarun.kum.sahu@gmail.com  
-L: https://www.linkedin.com/in/tarun-sahu-716595243/
-"""
+        message_body = f"To: {', '.join(filtered_emails)}\r\nSubject: Re: {subject}\r\n\r\n{reply_text}"
+        raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
 
-    to_header = ', '.join(unique_emails)
-    message_body = f"To: {to_header}\r\nSubject: Re: {subject}\r\n\r\n{reply_text}"
-    raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
+        service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
 
-    # Send the email
-    service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
+        service.users().messages().modify(
+            userId="me",
+            id=message["id"],
+            body={"removeLabelIds": ["UNREAD"]}
+        ).execute()
 
-    # Mark the original message as read
-    service.users().messages().modify(
-        userId="me",
-        id=msg_id,
-        body={"removeLabelIds": ["UNREAD"]}
-    ).execute()
-
-    return f"Replied to {to_header}."
+    return "Filtered replies sent."
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

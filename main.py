@@ -1,4 +1,3 @@
-
 from flask import Flask, request
 import base64
 import os
@@ -18,7 +17,11 @@ def gmail_auto_reply():
     )
 
     service = build("gmail", "v1", credentials=creds)
-    results = service.users().messages().list(userId="me", labelIds=["INBOX", "UNREAD"], maxResults=5).execute()
+
+    results = service.users().messages().list(
+        userId="me", labelIds=["INBOX", "UNREAD"], maxResults=5
+    ).execute()
+
     messages = results.get("messages", [])
 
     for message in messages:
@@ -36,6 +39,15 @@ def gmail_auto_reply():
         raw_message = base64.urlsafe_b64encode(message_body.encode("utf-8")).decode("utf-8")
 
         service.users().messages().send(userId="me", body={"raw": raw_message}).execute()
-        service.users().messages().modify(userId="me", id=message["id"], body={"removeLabelIds": ["UNREAD"]}).execute()
+
+        service.users().messages().modify(
+            userId="me",
+            id=message["id"],
+            body={"removeLabelIds": ["UNREAD"]}
+        ).execute()
 
     return "Auto-replies sent."
+
+# ✅ FIX for Cloud Run: Bind to the expected port
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
